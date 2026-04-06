@@ -5,11 +5,14 @@
 # Raw and processed data (large files — download separately)
 /data/
 
+# Trained models (large binary artifacts — reproduced by running the notebooks)
+/models/
+
 # Claude Code local settings
 .claude/
 
 # Spark runtime artifacts
-derby.log
+*.log
 metastore_db/
 spark-warehouse/
 

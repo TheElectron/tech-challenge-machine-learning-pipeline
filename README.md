@@ -1,134 +1,152 @@
-# ✈️ Flight Delays and Cancellations | ML Pipeline
+# ✈️ Atrasos e Cancelamentos de Voos | Pipeline de ML
 
-Pipeline completo de ciência de dados sobre atrasos de voos nos EUA (2015), cobrindo análise exploratória, engenharia de features, modelos supervisionados e não supervisionados.
+Pipeline de machine learning end-to-end sobre atrasos em voos domésticos dos EUA (2015), cobrindo análise exploratória, engenharia de features, classificação supervisionada e clustering não supervisionado.
 
 ---
 
 ## Objetivo
 
-Construir um pipeline end-to-end capaz de:
-1. **Prever** se um voo chegará atrasado (≥ 15 min) — classificação supervisionada
-2. **Identificar perfis de atraso** — agrupamento não supervisionado por causa
+1. **Classificar** se um voo chegará atrasado (≥ 15 min) — aprendizado supervisionado
+2. **Perfilar causas de atraso** — clustering não supervisionado
+
+**Momento de predição:** no horário de partida programado, usando apenas informações pré-voo (sem atraso de partida nem colunas operacionais preenchidas após a decolagem).
 
 ---
 
 ## Dataset
 
-Dados públicos de voos domésticos nos EUA, disponíveis no [Kaggle](https://www.kaggle.com/datasets/usdot/flight-delays).
+Voos domésticos dos EUA do [dataset Kaggle Flight Delays 2015](https://www.kaggle.com/datasets/usdot/flight-delays).
 
-| Arquivo | Tipo | Registros | Descrição |
-|---|---|---|---|
-| `flights.csv` | Tabela Fato | 5.874.020 | Um registro por voo: horários, atrasos, causas, rota |
-| `airlines.csv` | Dimensão | 16 | Código IATA → nome da companhia |
-| `airports.csv` | Dimensão | ~300 | Código IATA, cidade, estado, coordenadas |
+| Arquivo | Registros | Descrição |
+|---|---|---|
+| `flights.csv` | 5.874.020 | Um registro por voo: horários, atrasos, rota |
+| `airlines.csv` | 16 | Código IATA → nome da companhia |
+| `airports.csv` | ~300 | Código IATA, cidade, estado, coordenadas |
 
-**Variável-alvo:** `ARRIVAL_DELAY` binarizada → `LABEL` (0 = pontual, 1 = atrasado ≥ 15 min)
-**Distribuição:** ≈ 81% pontual / 19% atrasado (dataset desbalanceado)
+**Alvo:** `ARRIVAL_DELAY` binarizado → `LABEL` (0 = pontual, 1 = atrasado ≥ 15 min)  
+**Distribuição das classes:** ≈ 81% pontual / 19% atrasado  
+**Escopo:** apenas voos concluídos (`CANCELLED=0`, `DIVERTED=0`) — 5.714.008 registros
 
 ---
 
-## Estrutura do Projeto
+## Arquitetura
 
 ```
-.
-├── data/
-│   ├── raw/                        # Dados originais (não versionados)
-│   │   ├── flights.csv
-│   │   ├── airlines.csv
-│   │   └── airports.csv
-│   └── processed/
-│       └── flights_features.parquet   # Saída do feature_eng.ipynb
-│
-├── notebooks/
-│   ├── eda_flight_delays_and_cancellations.ipynb   # Fase 1 — EDA
-│   ├── feature_eng.ipynb                           # Fase 2 — Limpeza e Features
-│   ├── classifier.ipynb                            # Fase 3 — Modelos Supervisionados
-│   └── clustering.ipynb                            # Fase 4 — Clustering
-│
-├── models/                         # Modelos treinados (Spark ML PipelineModel)
-│   ├── logistic_regression/
-│   ├── random_forest/
-│   ├── gbt/
-│   ├── kmeans/
-│   └── kmeans_preprocessor/
-│
-├── docs/                           # Documentação e dicionário de dados
-├── src/                            # Módulos Python reutilizáveis (em desenvolvimento)
-├── deploy/                         # Configurações de deploy (em desenvolvimento)
-├── conf/                           # Configurações do projeto
-└── requirements.txt
+data/raw/*.csv
+      │
+      ▼
+eda_flight_delays_and_cancellations.ipynb   ← Fase 1: EDA
+      │
+      ▼
+feature_eng.ipynb                           ← Fase 2: Engenharia de Features
+      │
+      ▼  data/processed/flights_features.parquet
+      │
+      ├──────────────────────────┐
+      ▼                          ▼
+classifier.ipynb            clustering.ipynb
+(Modelos Supervisionados)   (Não Supervisionado — K-Means)
+      │                          │
+      ▼                          ▼
+models/logistic_regression  models/kmeans
+models/random_forest        models/kmeans_preprocessor
+models/gbt
 ```
 
 ---
 
 ## Pipeline
 
-Os notebooks devem ser executados na seguinte ordem:
-
-```
-eda_flight_delays_and_cancellations.ipynb
-        ↓
-feature_eng.ipynb  →  data/processed/flights_features.parquet
-        ↓                         ↓
-classifier.ipynb            clustering.ipynb
-        ↓
-    models/
-```
-
 ### Fase 1 — EDA (`eda_flight_delays_and_cancellations.ipynb`)
-Análise exploratória completa: distribuições, padrões temporais, análise por companhia/aeroporto, correlações e identificação de riscos de leakage.
 
-**Principais achados:**
+Principais achados:
 - Forte desbalanceamento de classes (81/19)
-- Colunas de causa de atraso têm nulos informativos (DOT não preenche para voos pontuais)
-- `DEPARTURE_DELAY` tem alta correlação com `ARRIVAL_DELAY` → risco de leakage
-- Padrão "bola de neve": atrasos se acumulam ao longo do dia
+- Colunas de causa de atraso possuem **nulos informativos**: o DOT só as preenche quando `ARRIVAL_DELAY ≥ 15` → preenchidos com 0 para voos pontuais
+- `DEPARTURE_DELAY` é altamente correlacionado com `ARRIVAL_DELAY` → excluído (informação pós-partida, indisponível no momento de predição)
+- Efeito cascata: atrasos se acumulam ao longo do dia
 
-### Fase 2 — Feature Engineering (`feature_eng.ipynb`)
-**Input:** `data/raw/*.csv` → **Output:** `data/processed/flights_features.parquet`
+### Fase 2 — Engenharia de Features (`feature_eng.ipynb`)
 
-- Filtragem do escopo: voos concluídos com `ARRIVAL_DELAY` informado (5.714.008 registros)
-- Tratamento de nulos nas colunas de causa: confirmado que nulos = voo pontual → `fillna(0)`
-- Criação de 16 features preditivas: temporais, de rota e históricas
-- **Correção de leakage**: features históricas calculadas exclusivamente no treino (meses 1-10) e aplicadas no teste via join — grupos ausentes recebem média global do treino
-- Encoding com `StringIndexer` ajustado apenas no treino
+**Entrada:** `data/raw/*.csv` → **Saída:** `data/processed/flights_features.parquet`
+
+**Split temporal:** treino = meses 1–10, teste = meses 11–12 (aplicado antes de qualquer agregado)
+
+| Grupo de features | Features criadas |
+|---|---|
+| Temporais | `HORA_PARTIDA`, `HORA_CHEGADA_PROG`, `TURNO`, `IS_WEEKEND`, `IS_PEAK_MONTH` |
+| Rota | `ROTA`, `FREQ_ROTA`*, `LOG_DISTANCE` |
+| Históricas | `HIST_DELAY_AIRLINE`, `HIST_DELAY_ORIGIN`, `HIST_DELAY_DEST`, `HIST_DELAY_ROTA`, `HIST_DELAY_AIRLINE_DOW`, `HIST_DELAY_AIRLINE_TURNO` |
+| Encoded | `AIRLINE_IDX`, `TURNO_IDX` (StringIndexer, fit apenas no treino) |
+
+*`FREQ_ROTA` calculada apenas nos meses de treino; rotas inéditas no teste recebem a média do treino.
+
+**Prevenção de leakage:** todos os agregados derivados do alvo (atrasos históricos) calculados exclusivamente nos dados de treino e depois unidos ao teste. `StringIndexer` ajustado apenas no treino.
 
 ### Fase 3 — Modelos Supervisionados (`classifier.ipynb`)
-**Input:** `flights_features.parquet` → **Output:** modelos em `models/`
 
-Split temporal: treino = meses 1-10 (83,7%), teste = meses 11-12 (16,3%)
+**Split:** treino = meses 1–10 (83,7%), teste = meses 11–12 (16,3%)
 
-| Modelo | AUC-ROC | F1 | Precision | Recall | Accuracy |
-|---|---|---|---|---|---|
-| Logistic Regression | 0.6279 | 0.692 | 0.7502 | 0.6587 | 0.6587 |
-| Random Forest | 0.6213 | 0.720 | 0.7425 | 0.7029 | 0.7029 |
-| Gradient Boosted Trees | — | — | — | — | — |
+**Estratégia de desbalanceamento:**
+- Regressão Logística e Random Forest: `weightCol` (frequência inversa das classes)
+- GBT: oversampling da classe minoritária (~4,35×, GBT não suporta `weightCol`)
 
-Estratégia anti-desbalanceamento:
-- LR e RF: `weightCol` com pesos inversamente proporcionais à frequência da classe
-- GBT: oversampling da classe minoritária (~4,35×)
+**Baseline ingênuo** (sempre prediz pontual): acurácia ≈ 0,8139, recall(1) = 0.
+
+| Modelo | AUC-ROC | PR-AUC | F1-macro | F1 (cls 1) | Recall (1) | Acurácia |
+|---|---|---|---|---|---|---|
+| Regressão Logística | 0,6178 | 0,2471 | 0,6887 | 0,3235 | 0,4591 | 0,6552 |
+| Random Forest | 0,6157 | 0,2416 | 0,7133 | 0,3052 | 0,3761 | 0,6925 |
+| Gradient Boosted Trees | 0,6032 | 0,2360 | 0,6918 | 0,2996 | 0,4022 | 0,6624 |
+
+🏆 Melhor modelo (AUC-ROC): Regressão Logística
+
+A otimização de limiar é aplicada no melhor modelo após o treinamento para maximizar o F1 na classe de atraso (o padrão 0,5 é subótimo dado o desbalanceamento).
 
 ### Fase 4 — Clustering (`clustering.ipynb`)
-**Input:** `flights_features.parquet` → **Output:** modelo em `models/kmeans`
 
-Agrupa os **voos atrasados** por perfil de causa usando K-Means.
+**Escopo:** apenas voos atrasados (LABEL=1, 1.063.439 voos)
 
-Features: `AIR_SYSTEM_DELAY`, `SECURITY_DELAY`, `AIRLINE_DELAY`, `LATE_AIRCRAFT_DELAY`, `WEATHER_DELAY`
+**Features:** 4 colunas de causa de atraso (minutos por causa):
+`AIR_SYSTEM_DELAY`, `AIRLINE_DELAY`, `LATE_AIRCRAFT_DELAY`, `WEATHER_DELAY`
 
-Perfis esperados:
+> `SECURITY_DELAY` excluída: média < 0,1 min em todos os voos — variância próxima de zero.
 
-| Cluster | Causa dominante |
+**Seleção de K** (WSSSE + silhueta em 10% da amostra):
+
+| k | WSSSE | Silhouette |
+|---|---|---|
+| 2 | 462.072 | 0,913 — apenas 2 grupos grosseiros |
+| 4 | 335.268 | 0,598 |
+| **5** | **318.455** | **0,799** ← selecionado |
+| 6 | 258.797 | 0,780 |
+
+K=5 selecionado: melhor equilíbrio entre redução de WSSSE e coesão dos clusters, e corresponde aos 4 perfis de atraso esperados (cascata, operacional, clima, espaço aéreo) mais um grupo misto/severo.
+
+**Perfis esperados dos clusters:**
+
+| Perfil | Causa dominante |
 |---|---|
-| Efeito cascata | `LATE_AIRCRAFT_DELAY` |
+| Cascata | `LATE_AIRCRAFT_DELAY` |
 | Operacional | `AIRLINE_DELAY` |
-| Climático | `WEATHER_DELAY` |
-| Sistêmico | `AIR_SYSTEM_DELAY` |
-
-K ótimo determinado por curva de cotovelo (WSSSE) + coeficiente de silhueta em amostra de 10%.
+| Clima | `WEATHER_DELAY` |
+| Espaço aéreo | `AIR_SYSTEM_DELAY` |
+| Misto / Severo | múltiplas causas |
 
 ---
 
-## Tech Stack
+## Limitações Conhecidas
+
+| Limitação | Impacto |
+|---|---|
+| Features excluem `DEPARTURE_DELAY` | Teto de AUC-ROC ~0,63; modelo ainda é acionável pré-partida |
+| Dados de 2015 apenas | O modelo requer retreinamento para mudanças estruturais (novas companhias, padrões pós-COVID) |
+| Features históricas são estáticas | `HIST_DELAY_*` ficam desatualizadas conforme o desempenho das companhias muda; precisam de recomputo periódico |
+| K-Means em distribuições de atraso desbalanceadas | Clusters dominantes são possíveis; k=5 foi escolhido para mitigar, mas os tamanhos por cluster devem ser monitorados |
+| Sem intervalos de confiança nas métricas | Apenas estimativas pontuais; variância é baixa dado ~900k registros de teste |
+
+---
+
+## Stack Tecnológica
 
 | Camada | Tecnologia |
 |---|---|
@@ -136,52 +154,54 @@ K ótimo determinado por curva de cotovelo (WSSSE) + coeficiente de silhueta em 
 | Processamento distribuído | PySpark 4.x |
 | Machine Learning | Spark MLlib |
 | Análise / Visualização | Pandas, NumPy, Matplotlib, Seaborn |
-| Formato de dados | Parquet (compressão columnar) |
+| Formato de dados | Parquet (colunar) |
 | Ambiente | Jupyter Notebook |
 
 ---
 
-## Setup
+## Configuração
 
 ```bash
-# 1. Clonar o repositório
 git clone <repo-url>
 cd tech-challenge-machine-learning-pipeline
 
-# 2. Criar e ativar ambiente virtual
 python -m venv .venv
-source .venv/bin/activate       # Linux/macOS
-# .venv\Scripts\activate        # Windows
+source .venv/bin/activate        # Linux/macOS
+# .venv\Scripts\activate         # Windows
 
-# 3. Instalar dependências
 pip install -r requirements.txt
-
-# 4. Baixar os dados
-# Faça o download em: https://www.kaggle.com/datasets/usdot/flight-delays
-# Coloque os arquivos em data/raw/
-
-# 5. Executar os notebooks na ordem indicada no pipeline acima
-jupyter notebook notebooks/
 ```
 
-**Requisito:** Java 17+ instalado (necessário para o PySpark)
+**Requisito:** Java 17+
 
 ```bash
 sudo apt install openjdk-17-jdk   # Ubuntu/Debian
+```
+
+Baixe o dataset do Kaggle e coloque os arquivos em `data/raw/`, depois execute os notebooks na ordem:
+
+```
+1. eda_flight_delays_and_cancellations.ipynb
+2. feature_eng.ipynb
+3. classifier.ipynb   (independente do 4)
+4. clustering.ipynb   (independente do 3)
 ```
 
 ---
 
 ## Roadmap
 
-- [x] **Fase 1** — Análise Exploratória dos Dados (EDA)
-- [x] **Fase 2** — Limpeza, Tratamento de Nulos e Feature Engineering
-- [x] **Fase 3** — Modelos Supervisionados (LR, Random Forest, GBT)
-- [x] **Fase 4** — Modelo Não Supervisionado (K-Means clustering)
-- [ ] **Fase 5** — Deploy e MLOps (Model Registry, API REST, Docker, monitoramento)
+- [x] Fase 1 — Análise Exploratória de Dados
+- [x] Fase 2 — Engenharia de Features (sem leakage, split temporal)
+- [x] Fase 3 — Modelos Supervisionados (LR, Random Forest, GBT + otimização de limiar)
+- [x] Fase 4 — Clustering Não Supervisionado (K-Means, k=5)
+- [ ] Fase 5 — Deploy & MLOps (Model Registry, REST API, Docker, monitoramento)
 
 ---
+## 🚀 Entregaveis
+
+- [Vídeo](https://drive.google.com/drive/folders/12yRYJUiJujpUMznBTROywDhfxgMcZA0G?usp=sharing)
 
 ## Licença
 
-Distribuído sob a licença MIT. Veja [LICENSE](LICENSE) para mais detalhes.
+MIT — veja [LICENSE](LICENSE).
